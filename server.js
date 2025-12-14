@@ -8,11 +8,19 @@ const app = express();
 /* --------------------
    CORS (IMPORTANT)
 -------------------- */
+const allowedOrigins = [
+  "https://augustine59-wangombe.github.io",
+  "https://augustine59-wangombe.github.io/Catholic-youth-system"
+];
+
 app.use(cors({
-  origin: "https://augustine59-wangombe.github.io",
+  origin: allowedOrigins,
   methods: ["GET", "POST", "OPTIONS"],
   allowedHeaders: ["Content-Type"]
 }));
+
+// Handle OPTIONS preflight requests
+app.options("*", cors());
 
 app.use(express.json());
 
@@ -45,7 +53,7 @@ async function getFirestoreToken(serviceAccount) {
    CALLBACK (CRITICAL)
 -------------------- */
 app.post("/callback", async (req, res) => {
-  // ✅ MUST respond immediately to Safaricom
+  // Respond immediately to Safaricom
   res.json({ ResultCode: 0, ResultDesc: "Accepted" });
 
   try {
@@ -187,6 +195,7 @@ app.get("/check-payment", async (req, res) => {
     res.json({ paid });
 
   } catch (err) {
+    console.error("❌ CHECK PAYMENT ERROR:", err);
     res.status(500).json({ paid: false });
   }
 });
