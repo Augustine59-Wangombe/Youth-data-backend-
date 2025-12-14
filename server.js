@@ -1,10 +1,11 @@
+
 import express from "express";
 import fetch from "node-fetch";
 
 const app = express();
 app.use(express.json());
 
-// CORS middleware
+// ---------------- CORS ----------------
 const allowedOrigins = ["https://augustine59-wangombe.github.io"];
 app.use((req, res, next) => {
   const origin = req.headers.origin;
@@ -12,27 +13,30 @@ app.use((req, res, next) => {
     res.setHeader("Access-Control-Allow-Origin", origin);
   }
   res.setHeader("Access-Control-Allow-Methods", "GET,POST,OPTIONS");
-  res.setHeader("Access-Control-Allow-Headers", "Content-Type");
+  res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization");
   if (req.method === "OPTIONS") return res.sendStatus(204);
   next();
 });
 
-// --- 1) Callback ---
+// ---------------- 1) M-PESA CALLBACK ----------------
 app.post("/callback", async (req, res) => {
+  // ✅ Respond immediately to M-PESA
+  res.json({ ResultCode: 0, ResultDesc: "Accepted" });
+
   try {
     const body = req.body;
     console.log("📥 M-PESA CALLBACK RECEIVED:", body);
 
-    // Decode Firebase service account
-    const serviceAccount = JSON.parse(Buffer.from(process.env.FIREBASE_SERVICE_ACCOUNT, "base64").toString("utf-8"));
-
-    // TODO: getAccessToken(serviceAccount) (Node.js version)
+    const serviceAccount = JSON.parse(
+      Buffer.from(process.env.FIREBASE_SERVICE_ACCOUNT, "base64").toString("utf-8")
+    );
     const token = await getAccessToken(serviceAccount);
 
     const firestoreUrl = `https://firestore.googleapis.com/v1/projects/${serviceAccount.project_id}/databases/(default)/documents/mpesa_payments`;
 
-    const phone = (body?.Body?.stkCallback?.CallbackMetadata?.Item?.find(i => i.Name === "PhoneNumber")?.Value || "").toString();
-    const amount = body?.Body?.stkCallback?.CallbackMetadata?.Item?.find(i => i.Name === "Amount")?.Value || 0;
+    const items = body?.Body?.stkCallback?.CallbackMetadata?.Item || [];
+    const phone = items.find(i => i.Name === "PhoneNumber")?.Value?.toString() || "";
+    const amount = items.find(i => i.Name === "Amount")?.Value || 0;
 
     await fetch(firestoreUrl, {
       method: "POST",
@@ -47,24 +51,28 @@ app.post("/callback", async (req, res) => {
       }),
     });
 
-    res.json({ message: "Callback stored" });
+    console.log(`✅ Stored payment from ${phone} for amount ${amount}`);
   } catch (err) {
-    console.error(err);
-    res.status(500).json({ error: err.toString() });
+    console.error("❌ Error storing callback:", err);
   }
 });
 
-// --- 2) STK PUSH ---
+// ---------------- 2) STK PUSH ----------------
 app.post("/stkpush", async (req, res) => {
   try {
     const { phone, amount } = req.body;
+
+    // ---------------- Validate ----------------
+    if (!phone || !amount) return res.status(400).json({ error: "Phone and amount are required" });
+    if (!/^2547\d{8}$/.test(phone)) return res.status(400).json({ error: "Phone must be in format 2547XXXXXXXX" });
+    if (amount < 1) return res.status(400).json({ error: "Amount must be greater than 0" });
 
     const shortcode = process.env.DARAJA_SHORTCODE;
     const passkey = process.env.DARAJA_PASSKEY;
     const timestamp = getTimestamp();
     const password = Buffer.from(shortcode + passkey + timestamp).toString("base64");
 
-    // OAuth token
+    // ---------------- OAuth ----------------
     const oauthRes = await fetch(
       "https://sandbox.safaricom.co.ke/oauth/v1/generate?grant_type=client_credentials",
       {
@@ -74,13 +82,12 @@ app.post("/stkpush", async (req, res) => {
         },
       }
     );
-    const oauthJson = await oauthRes.json();
-    const token = oauthJson.access_token;
+    const { access_token } = await oauthRes.json();
 
-    // STK Push
+    // ---------------- STK PUSH ----------------
     const stkRes = await fetch("https://sandbox.safaricom.co.ke/mpesa/stkpush/v1/processrequest", {
       method: "POST",
-      headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+      headers: { Authorization: `Bearer ${access_token}`, "Content-Type": "application/json" },
       body: JSON.stringify({
         BusinessShortCode: shortcode,
         Password: password,
@@ -96,12 +103,8 @@ app.post("/stkpush", async (req, res) => {
       }),
     });
 
-    let stkJson;
-    try {
-      stkJson = await stkRes.json();
-    } catch {
-      stkJson = { error: "Invalid JSON response from Safaricom" };
-    }
+    const stkJson = await stkRes.json();
+    console.log("📤 STK RESPONSE:", stkJson);
 
     res.json(stkJson);
   } catch (err) {
@@ -110,13 +113,15 @@ app.post("/stkpush", async (req, res) => {
   }
 });
 
-// --- 3) Check Payment Status ---
+// ---------------- 3) CHECK PAYMENT STATUS ----------------
 app.get("/check-payment", async (req, res) => {
   const phone = req.query.phone;
   if (!phone) return res.status(400).json({ error: "Phone number required" });
 
   try {
-    const serviceAccount = JSON.parse(Buffer.from(process.env.FIREBASE_SERVICE_ACCOUNT, "base64").toString("utf-8"));
+    const serviceAccount = JSON.parse(
+      Buffer.from(process.env.FIREBASE_SERVICE_ACCOUNT, "base64").toString("utf-8")
+    );
     const token = await getAccessToken(serviceAccount);
 
     const firestoreUrl = `https://firestore.googleapis.com/v1/projects/${serviceAccount.project_id}/databases/(default)/documents/mpesa_payments?pageSize=100`;
@@ -133,11 +138,11 @@ app.get("/check-payment", async (req, res) => {
   }
 });
 
-// --- Start server ---
+// ---------------- START SERVER ----------------
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => console.log(`Server running on port ${PORT}`));
 
-// ---------------- Helpers ----------------
+// ---------------- HELPERS ----------------
 function getTimestamp() {
   const date = new Date();
   return (
@@ -151,13 +156,9 @@ function getTimestamp() {
 }
 
 async function getAccessToken(sa) {
-  // Node.js version of JWT signing using google-auth-library is recommended
-  // For simplicity, you can install it:
-  // npm install google-auth-library
   const { GoogleAuth } = await import("google-auth-library");
   const auth = new GoogleAuth({ credentials: sa, scopes: ["https://www.googleapis.com/auth/datastore"] });
   const client = await auth.getClient();
   const token = await client.getAccessToken();
   return token.token;
 }
-
