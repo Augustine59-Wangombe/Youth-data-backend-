@@ -1,3 +1,4 @@
+
 import express from "express";
 import fetch from "node-fetch";
 import cors from "cors";
@@ -5,28 +6,36 @@ import { GoogleAuth } from "google-auth-library";
 
 const app = express();
 
-/* --------------------
-   CORS (IMPORTANT)
--------------------- */
+/* =========================================================
+   CORS CONFIGURATION (FIXED)
+   ========================================================= */
 const allowedOrigins = [
-  "https://augustine59-wangombe.github.io",
-  "https://augustine59-wangombe.github.io/Catholic-youth-system"
+  "https://augustine59-wangombe.github.io"
 ];
 
 app.use(cors({
-  origin: allowedOrigins,
+  origin: function (origin, callback) {
+    // Allow server-to-server requests (Safaricom, Render health checks)
+    if (!origin) return callback(null, true);
+
+    if (allowedOrigins.includes(origin)) {
+      return callback(null, true);
+    }
+
+    return callback(new Error("Not allowed by CORS"), false);
+  },
   methods: ["GET", "POST", "OPTIONS"],
-  allowedHeaders: ["Content-Type"]
+  allowedHeaders: ["Content-Type", "Authorization"]
 }));
 
-// Handle OPTIONS preflight requests
+// Handle browser preflight requests
 app.options("*", cors());
 
 app.use(express.json());
 
-/* --------------------
+/* =========================================================
    HELPERS
--------------------- */
+   ========================================================= */
 function getTimestamp() {
   const d = new Date();
   return (
@@ -49,15 +58,15 @@ async function getFirestoreToken(serviceAccount) {
   return token;
 }
 
-/* --------------------
-   CALLBACK (CRITICAL)
--------------------- */
+/* =========================================================
+   SAFARICOM CALLBACK (VERY IMPORTANT)
+   ========================================================= */
 app.post("/callback", async (req, res) => {
-  // Respond immediately to Safaricom
+  // MUST respond immediately
   res.json({ ResultCode: 0, ResultDesc: "Accepted" });
 
   try {
-    console.log("📥 CALLBACK:", JSON.stringify(req.body));
+    console.log("📥 CALLBACK RECEIVED:", JSON.stringify(req.body));
 
     const serviceAccount = JSON.parse(
       Buffer.from(process.env.FIREBASE_SERVICE_ACCOUNT, "base64").toString("utf8")
@@ -77,7 +86,7 @@ app.post("/callback", async (req, res) => {
     await fetch(firestoreUrl, {
       method: "POST",
       headers: {
-        "Authorization": `Bearer ${token}`,
+        Authorization: `Bearer ${token}`,
         "Content-Type": "application/json"
       },
       body: JSON.stringify({
@@ -85,8 +94,8 @@ app.post("/callback", async (req, res) => {
           phone: { stringValue: phone },
           amount: { integerValue: amount },
           success: { booleanValue: resultCode === 0 },
-          payload: { stringValue: JSON.stringify(req.body) },
-          timestamp: { timestampValue: new Date().toISOString() }
+          rawPayload: { stringValue: JSON.stringify(req.body) },
+          createdAt: { timestampValue: new Date().toISOString() }
         }
       })
     });
@@ -96,9 +105,9 @@ app.post("/callback", async (req, res) => {
   }
 });
 
-/* --------------------
-   STK PUSH
--------------------- */
+/* =========================================================
+   STK PUSH ENDPOINT
+   ========================================================= */
 app.post("/stkpush", async (req, res) => {
   try {
     const { phone, amount } = req.body;
@@ -112,7 +121,7 @@ app.post("/stkpush", async (req, res) => {
     const timestamp = getTimestamp();
     const password = Buffer.from(shortcode + passkey + timestamp).toString("base64");
 
-    // OAuth
+    // OAuth token
     const oauthRes = await fetch(
       "https://sandbox.safaricom.co.ke/oauth/v1/generate?grant_type=client_credentials",
       {
@@ -129,7 +138,7 @@ app.post("/stkpush", async (req, res) => {
 
     const { access_token } = await oauthRes.json();
 
-    // STK request
+    // STK Push
     const stkRes = await fetch(
       "https://sandbox.safaricom.co.ke/mpesa/stkpush/v1/processrequest",
       {
@@ -149,7 +158,7 @@ app.post("/stkpush", async (req, res) => {
           PhoneNumber: phone,
           CallBackURL: process.env.CALLBACK_URL,
           AccountReference: "Youth Registration",
-          TransactionDesc: "Membership"
+          TransactionDesc: "Membership Payment"
         })
       }
     );
@@ -158,18 +167,18 @@ app.post("/stkpush", async (req, res) => {
     res.json(data);
 
   } catch (err) {
-    console.error("❌ STK ERROR:", err);
+    console.error("❌ STK PUSH ERROR:", err);
     res.status(500).json({ error: "STK push failed" });
   }
 });
 
-/* --------------------
-   CHECK PAYMENT
--------------------- */
+/* =========================================================
+   CHECK PAYMENT STATUS
+   ========================================================= */
 app.get("/check-payment", async (req, res) => {
   try {
     const phone = req.query.phone;
-    if (!phone) return res.status(400).json({ paid: false });
+    if (!phone) return res.json({ paid: false });
 
     const serviceAccount = JSON.parse(
       Buffer.from(process.env.FIREBASE_SERVICE_ACCOUNT, "base64").toString("utf8")
@@ -196,12 +205,14 @@ app.get("/check-payment", async (req, res) => {
 
   } catch (err) {
     console.error("❌ CHECK PAYMENT ERROR:", err);
-    res.status(500).json({ paid: false });
+    res.json({ paid: false });
   }
 });
 
-/* --------------------
+/* =========================================================
    START SERVER
--------------------- */
+   ========================================================= */
 const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => console.log("🚀 Backend running on", PORT));
+app.listen(PORT, () => {
+  console.log("🚀 Backend running on port", PORT);
+});
